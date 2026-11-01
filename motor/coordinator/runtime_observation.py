@@ -61,7 +61,11 @@ class WorkerObservation:
                 if self.path.stat().st_size > 1024:
                     raise ValueError("invalid runtime recovery state")
                 value = json.loads(self.path.read_text())
-                if value.get("target_id") != target_id or not isinstance(value.get("query_fault"), bool):
+                if (
+                    not isinstance(value, dict)
+                    or value.get("target_id") != target_id
+                    or not isinstance(value.get("query_fault"), bool)
+                ):
                     raise ValueError("invalid runtime recovery state")
                 self.pending = value["query_fault"]
         except (OSError, ValueError):
@@ -121,6 +125,7 @@ class WorkerObservation:
                 "worker_index": self.index,
                 "worker_start_id": self.boot,
                 "worker_started_at": self.started_at,
+                "sampled_at_monotonic_seconds": time.monotonic(),
                 "sequence": self.sequence,
                 "pid": os.getpid(),
                 "target_id": self.target_id,
@@ -187,25 +192,29 @@ class RuntimeObservations:
             "fallback_confirmed",
             "worker_started_at",
             "sequence",
+            "sampled_at_monotonic_seconds",
         ):
             number = value.get(key)
             if type(number) not in (int, float) or not math.isfinite(number) or number < 0:
                 raise ValueError("invalid runtime counter")
+        sampled_at = value["sampled_at_monotonic_seconds"]
+        if sampled_at > time.monotonic():
+            raise ValueError("invalid runtime source time")
         old = self.rows.get(index)
         if old:
             previous = old[1]
             same = previous["worker_start_id"] == value["worker_start_id"]
-            if (same and value["sequence"] <= previous["sequence"]) or (
+            if (same and (value["sequence"] <= previous["sequence"] or sampled_at < old[0])) or (
                 not same and value["worker_started_at"] <= previous["worker_started_at"]
             ):
                 raise ValueError("out of order runtime observation")
             if previous["query_recovery_pending"] and not value["query_last_success_seconds"]:
                 value = value | {"query_recovery_pending": 1}
-        self.rows[index] = (time.monotonic(), dict(value))
+        self.rows[index] = (sampled_at, dict(value))
 
     def snapshot(self, ready: bool) -> dict[str, Any]:
         now = time.monotonic()
-        rows = [value | {"observation_age_seconds": now - received} for received, value in self.rows.values()]
+        rows = [value | {"observation_age_seconds": now - sampled} for sampled, value in self.rows.values()]
         current = [row for row in rows if row["observation_age_seconds"] <= 15]
         complete = len(current) == self.workers and all(row.get("persistence_ready") for row in current)
         # Losing a worker sample does not recover a confirmed fault. Keep that
