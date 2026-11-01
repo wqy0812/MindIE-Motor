@@ -32,6 +32,7 @@ class SchedulerRequestType(str, Enum):
 
     GET_AVAILABLE_INSTANCES = "get_available_instances"  # Worker/Obs fetch instance list and workload shm name
     GET_INSTANCE_STATUS = "get_instance_status"  # Obs fetches authoritative all-pool health from Mgmt
+    RUNTIME_OBSERVATION = "runtime_observation"  # Bounded worker telemetry; no scheduling mutation
     CONFIRM_SAMPLE = "confirm_sample"  # compatibility wire value for entry-side sampling admission
     RECORD_PRECISION_RESULT = "record_precision_result"  # global consecutive + probing
     FINISH_PRECISION_ACTION = "finish_precision_action"  # clear probing after probe/alarm

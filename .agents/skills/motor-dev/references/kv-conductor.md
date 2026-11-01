@@ -634,3 +634,7 @@ cargo test --lib            # Unit tests
 cargo test                  # All tests including integration
 cargo run                   # HTTP + ZMQ SUB
 ```
+
+## Runtime observation
+
+`runtime_observation.rs` provides the opt-in `/runtime` summary. It keeps fixed-size atomic query counters and service-start identity without scanning registrations or indexes. `/query` and `/query_by_hash` record final HTTP outcomes. See [runtime observation](../../../../docs/features/runtime-observation.md) for scope and tests.

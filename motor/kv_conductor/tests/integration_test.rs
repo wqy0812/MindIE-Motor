@@ -1147,3 +1147,40 @@ async fn test_query_msgpack_error_paths() {
     let body: Value = resp.json().await.unwrap();
     assert!(body.get("error").is_some());
 }
+
+#[tokio::test]
+async fn test_runtime_observation_http_is_bounded_and_counts_real_queries() {
+    std::env::set_var("MOTOR_RUNTIME_TARGET_ID", "runtime-conductor-test");
+    let (url, handle) = start_test_server().await;
+    let client = Client::new();
+    let before: Value = client
+        .get(format!("{url}/runtime"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let response = client
+        .post(format!("{url}/query"))
+        .header("content-type", "application/json")
+        .body("invalid json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    let response = client.get(format!("{url}/runtime")).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = response.bytes().await.unwrap();
+    assert!(bytes.len() < 4096);
+    let after: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(after["schema"], "motor-runtime-v1");
+    assert_eq!(after["service_start_id"], before["service_start_id"]);
+    assert!(
+        after["query_counts"]["rejected"].as_u64().unwrap()
+            > before["query_counts"]["rejected"].as_u64().unwrap()
+    );
+    assert!(after.get("token_ids").is_none());
+    handle.abort();
+    std::env::remove_var("MOTOR_RUNTIME_TARGET_ID");
+}

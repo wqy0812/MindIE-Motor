@@ -186,10 +186,14 @@ class _SchedulerRequestDispatcher:
         # True when InstanceManager has changes not yet reflected in the SHM snapshot; drained by
         # _retry_dirty_snapshot (also forces a resync on the next apply_refresh).
         self._snapshot_dirty = False
+        from motor.coordinator.runtime_observation import RuntimeObservations
+
+        self.runtime_observations = RuntimeObservations(config.inference_workers_config.num_workers)
 
     async def dispatch(self, request: SchedulerRequest) -> SchedulerResponse:
         """Dispatch control-plane request to the appropriate handler."""
         handlers = {
+            SchedulerRequestType.RUNTIME_OBSERVATION.value: self._handle_runtime_observation,
             SchedulerRequestType.GET_AVAILABLE_INSTANCES.value: self._handle_get_available_instances,
             SchedulerRequestType.GET_INSTANCE_STATUS.value: self._handle_get_instance_status,
             SchedulerRequestType.CONFIRM_SAMPLE.value: self._handle_confirm_sample,
@@ -209,6 +213,20 @@ class _SchedulerRequestDispatcher:
             response_type=SchedulerResponseType.ERROR,
             request_id=request.request_id,
             error=f"Unknown request type: {request.request_type}",
+        )
+
+    def _handle_runtime_observation(self, request: SchedulerRequest) -> SchedulerResponse:
+        """Accept only a bounded worker slot; failures do not change routing."""
+        try:
+            self.runtime_observations.receive(request.data)
+        except (ValueError, TypeError):
+            return SchedulerResponse(
+                response_type=SchedulerResponseType.ERROR,
+                request_id=request.request_id,
+                error="invalid runtime observation",
+            )
+        return SchedulerResponse(
+            response_type=SchedulerResponseType.SUCCESS, request_id=request.request_id, data={"accepted": True}
         )
 
     def _handle_get_available_instances(self, request: SchedulerRequest) -> SchedulerResponse:

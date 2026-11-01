@@ -19,6 +19,7 @@ from motor.common.http.http_client import SafeHTTPSClient
 from motor.common.utils.env import Env
 from motor.common.utils.net import format_address, format_host
 from motor.config.coordinator import CoordinatorConfig
+from motor.coordinator.runtime_observation import record_query
 
 
 TENANT_ID = "default"
@@ -671,6 +672,7 @@ class ConductorApiClient:
                     cls._query_failures,
                     cls._query_cool_until,
                 )
+                record_query("circuit_open")
                 return {}
             # Cooldown expired — half-open, try one request
             logger.info(
@@ -707,13 +709,17 @@ class ConductorApiClient:
                 else:
                     response = client.do_post("/query", data=query_data)
                 parsed = cls._decode_query_response(response, encoding)
+                if not isinstance(parsed, dict):
+                    raise ValueError("invalid conductor query response")
                 # INFO: full match result (per-instance longest_matched / per-DP
                 # matched blocks) is key observability data for KV-affinity tuning.
                 logger.info("conductor query response: %s", parsed)
                 cls._query_failures = 0  # reset on success
+                record_query("success")
                 return parsed
         except Exception as e:
             cls._query_failures += 1
+            record_query("failure")
             if cls._query_failures >= cls._QUERY_CB_THRESHOLD:
                 cls._query_cool_until = time.time() + cls._QUERY_CB_COOLDOWN
                 logger.warning(
