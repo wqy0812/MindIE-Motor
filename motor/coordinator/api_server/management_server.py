@@ -423,6 +423,17 @@ class ManagementServer(BaseCoordinatorServer):
                 detail="Coordinator daemon heartbeat stale; liveness failed for pod restart",
             )
 
+        @self.management_app.get("/runtime")
+        async def runtime_observation():
+            """Return bounded worker coverage and real query/selection observations."""
+            if not os.environ.get("MOTOR_RUNTIME_TARGET_ID"):
+                raise HTTPException(status_code=404, detail="Runtime observation is not configured")
+            dispatcher = getattr(self._control_plane, "_dispatcher", None)
+            if dispatcher is None:
+                raise HTTPException(status_code=503, detail="Runtime observation is not ready")
+            out = await self._readiness_probe.check()
+            return dispatcher.runtime_observations.snapshot(out.is_ready)
+
         @self.management_app.get("/readiness")
         async def readiness_check(request: Request):
             # Note: If this returns ready=False (e.g. no required instances), K8s removes the pod from

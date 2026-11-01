@@ -703,12 +703,18 @@ class AsyncSchedulerClient:
     # instead of raising AttributeError.
     _cache_declarations: CacheDeclarationTable | None = None
     _cache_lifecycle_task: asyncio.Task | None = None
+    _runtime_observation_task: asyncio.Task | None = None
 
     def __init__(self, config: SchedulerClientConfig):
         self.scheduler_address = config.scheduler_address
         self.timeout = config.timeout
         self._client_index = max(0, config.client_index)
         self._client_count = max(1, config.client_count)
+        self._runtime_observation_enabled = config.log_dp_stats
+        if self._runtime_observation_enabled:
+            from motor.coordinator.runtime_observation import initialize_worker
+
+            initialize_worker(self._client_index)
         # Per-request ids: one-time full-uuid prefix + monotonic counter, avoiding a uuid4() per call.
         # Correctness only needs client-local uniqueness -- the transport matches replies in its own
         # _pending_requests dict keyed by request_id, on its own DEALER socket; the scheduler only
@@ -832,10 +838,32 @@ class AsyncSchedulerClient:
         if success:
             self._start_dp_stats_task()
             self._start_cache_lifecycle_task()
+            from motor.coordinator.runtime_observation import worker_snapshot
+
+            if getattr(self, "_runtime_observation_enabled", False) and worker_snapshot() is not None:
+                if self._runtime_observation_task is None or self._runtime_observation_task.done():
+                    self._runtime_observation_task = asyncio.create_task(self._runtime_observation_loop())
             logger.info("Async scheduler client connected to %s", self.scheduler_address)
         return success
 
     async def disconnect(self) -> None:
+        cleanup = asyncio.create_task(self._disconnect_resources())
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _disconnect_resources(self) -> None:
+        runtime_task = self._runtime_observation_task
+        self._runtime_observation_task = None
+        if runtime_task is not None:
+            runtime_task.cancel()
+            await asyncio.gather(runtime_task, return_exceptions=True)
         await self._stop_dp_stats_task()
         await self._stop_cache_lifecycle_task()
         try:
@@ -853,6 +881,27 @@ class AsyncSchedulerClient:
         finally:
             # Always close transport so ZMQ context is terminated even if above steps raise.
             await self._transport.disconnect()
+
+    async def _runtime_observation_loop(self) -> None:
+        """Publish one bounded snapshot per worker; never send per-request RPCs."""
+        from motor.coordinator.api_client.conductor_api_client import ConductorApiClient
+        from motor.coordinator.runtime_observation import worker_snapshot
+
+        while True:
+            value = worker_snapshot()
+            if value is None:
+                return
+            value["query_circuit_open"] = int(
+                ConductorApiClient._query_failures >= 3 and time.time() < ConductorApiClient._query_cool_until
+            )
+            request = SchedulerRequest(
+                request_type=SchedulerRequestType.RUNTIME_OBSERVATION, request_id=self._next_request_id(), data=value
+            )
+            try:
+                await asyncio.wait_for(self._transport.send_request(request), timeout=1)
+            except (TimeoutError, OSError, RuntimeError):
+                pass
+            await asyncio.sleep(5)
 
     def _start_dp_stats_task(self) -> None:
         """Start this worker's per-DP stats loop (requests + SHM tokens)."""
@@ -1771,6 +1820,9 @@ class AsyncSchedulerClient:
                 slot=meta.get("slot"),
             )
             if status == STATUS_OK:
+                from motor.coordinator.runtime_observation import record_decision
+
+                record_decision(candidate_policy if target_instance_id is None else "pinned")
                 self._cache.patch_workload_from_shm(out_instance.id, out_endpoint.id, role, actual)
                 meta["active_tokens"] = actual
                 self._dp_stats.record(
@@ -2513,6 +2565,9 @@ class AsyncSchedulerClient:
         if not instances:
             return [], self._scheduler_type_for_role(role)
         st = self._scheduler_type_for_role(role)
+        from motor.coordinator.runtime_observation import QUERY_REASON
+
+        QUERY_REASON.set("policy_selected")
         if st == "load_balance":
             candidates = self._select_endpoint_candidates_by_load_balance(
                 instances, role, top_k, req_id=req_info.req_id

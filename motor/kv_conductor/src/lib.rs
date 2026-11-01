@@ -42,3 +42,4 @@ pub use protocols::{
 };
 pub use registry::WorkerRegistry;
 pub use server::create_router;
+pub mod runtime_observation;

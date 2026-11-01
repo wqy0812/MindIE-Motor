@@ -658,6 +658,27 @@ def _mock_failed_query(mock_http):
 
 
 @patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
+def test_runtime_observation_counts_actual_calls_and_circuit_skips(mock_http, monkeypatch, tmp_path):
+    from motor.coordinator import runtime_observation as observation
+
+    tmp_path.chmod(0o700)
+    worker = observation.WorkerObservation("coordinator", 0, tmp_path)
+    monkeypatch.setattr(observation, "_state", worker)
+    monkeypatch.setattr(ConductorApiClient, "_query_failures", 0)
+    monkeypatch.setattr(ConductorApiClient, "_query_cool_until", 0)
+    _mock_failed_query(mock_http)
+    for _ in range(4):
+        ConductorApiClient.query_conductor([_make_mock_instance(1)], [1, 2])
+    assert worker.snapshot()["query_counts"] == {"success": 0, "failure": 3, "circuit_open": 1}
+    assert worker.snapshot()["query_recovery_pending"] == 1
+    ConductorApiClient._query_cool_until = 0
+    mock_http.return_value.__enter__.side_effect = None
+    _mock_successful_query(mock_http)
+    ConductorApiClient.query_conductor([_make_mock_instance(1)], [1, 2])
+    assert worker.snapshot()["query_recovery_pending"] == 0
+
+
+@patch("motor.coordinator.api_client.conductor_api_client.SafeHTTPSClient")
 def test_return_value_on_success(mock_http):
     """On success (msgpack default), query_conductor returns the response dict."""
     expected = {TENANT_ID: {"vllm-prefill-1": {"longest_matched": 100, "DP": {"0": 50}}}}

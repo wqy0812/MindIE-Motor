@@ -500,3 +500,7 @@ bash tests/run_tests.sh tests/coordinator/
 ```
 
 For metrics-specific development, read `references/metrics.md`.
+
+## Runtime observation
+
+The management `/runtime` summary uses `runtime_observation.py` and the existing scheduler IPC. Inference worker snapshots keep separate boot/sequence identities, actual query results and committed selection counters; management reports bounded coverage and retains confirmed query faults across gaps. See [runtime observation](../../../../docs/features/runtime-observation.md) for opt-in environment, persistent recovery state and tests.

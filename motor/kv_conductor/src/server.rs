@@ -48,6 +48,7 @@ pub struct AppState {
 
 /// Create the axum Router with all endpoints.
 pub fn create_router(state: AppState) -> Router {
+    crate::runtime_observation::initialize();
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -60,6 +61,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/query_by_hash", post(query_by_hash_handler))
         .route("/events", post(events_handler))
         .route("/health", get(health_handler))
+        .route("/runtime", get(crate::runtime_observation::handler))
         .route("/workers", get(workers_handler));
 
     // Raise the global body limit — DeepSeek V4 queries carry 400K+ token
@@ -201,7 +203,11 @@ async fn query_handler(State(state): State<AppState>, headers: HeaderMap, body: 
     let req = match parse_query_body::<QueryRequest>(&headers, &body) {
         Ok(parsed) => parsed,
         Err(message) => {
-            return query_error_response(StatusCode::BAD_REQUEST, &message, msgpack);
+            return crate::runtime_observation::observe_response(query_error_response(
+                StatusCode::BAD_REQUEST,
+                &message,
+                msgpack,
+            ));
         }
     };
 
@@ -213,7 +219,7 @@ async fn query_handler(State(state): State<AppState>, headers: HeaderMap, body: 
         "query request"
     );
 
-    match state.registry.query(&req).await {
+    let response = match state.registry.query(&req).await {
         Ok(response) => ok_query_response(response, msgpack),
         Err(KvConductorError::NoIndexer {
             model_name,
@@ -231,7 +237,8 @@ async fn query_handler(State(state): State<AppState>, headers: HeaderMap, body: 
             empty_tenant_response(&tenant_id, msgpack)
         }
         Err(e) => query_error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string(), msgpack),
-    }
+    };
+    crate::runtime_observation::observe_response(response)
 }
 
 /// POST /query_by_hash
@@ -248,7 +255,11 @@ async fn query_by_hash_handler(
     let req = match parse_query_body::<QueryByHashRequest>(&headers, &body) {
         Ok(parsed) => parsed,
         Err(message) => {
-            return query_error_response(StatusCode::BAD_REQUEST, &message, msgpack);
+            return crate::runtime_observation::observe_response(query_error_response(
+                StatusCode::BAD_REQUEST,
+                &message,
+                msgpack,
+            ));
         }
     };
 
@@ -260,7 +271,7 @@ async fn query_by_hash_handler(
         "query_by_hash request"
     );
 
-    match state.registry.query_by_hash(&req).await {
+    let response = match state.registry.query_by_hash(&req).await {
         Ok(response) => ok_query_response(response, msgpack),
         Err(KvConductorError::NoIndexer {
             model_name,
@@ -278,7 +289,8 @@ async fn query_by_hash_handler(
             empty_tenant_response(&tenant_id, msgpack)
         }
         Err(e) => query_error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string(), msgpack),
-    }
+    };
+    crate::runtime_observation::observe_response(response)
 }
 
 /// POST /events
